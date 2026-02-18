@@ -413,7 +413,9 @@ class MainWindow(QMainWindow):
     # ── UI Setup ─────────────────────────────────────────────────────────
     def setup_ui(self):
         self.setWindowTitle("Words Frequency Extraction Tool")
-        self.setFixedSize(720, 660)
+        # Allow resizing so content is not clipped on different DPI/scales.
+        self.setMinimumSize(720, 700)
+        self.resize(760, 760)
         self.setWindowIcon(self._create_icon())
 
         # Central widget with gradient background
@@ -434,8 +436,8 @@ class MainWindow(QMainWindow):
         central.setObjectName("centralWidget")
 
         main_layout = QVBoxLayout(central)
-        main_layout.setContentsMargins(30, 25, 30, 25)
-        main_layout.setSpacing(0)
+        main_layout.setContentsMargins(24, 20, 24, 20)
+        main_layout.setSpacing(8)
 
         # ── Glass Card Container ─────────────────────────────────────────
         card = QFrame()
@@ -456,8 +458,8 @@ class MainWindow(QMainWindow):
         card.setGraphicsEffect(shadow)
 
         card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(40, 35, 40, 35)
-        card_layout.setSpacing(18)
+        card_layout.setContentsMargins(34, 26, 34, 24)
+        card_layout.setSpacing(12)
 
         # ── Feather Icon + Title ─────────────────────────────────────────
         title_layout = QHBoxLayout()
@@ -502,13 +504,13 @@ class MainWindow(QMainWindow):
             "3. Save the output Excel file where you want."
         )
         instructions.setAlignment(Qt.AlignCenter)
+        instructions.setWordWrap(True)
         instructions.setStyleSheet("""
             font-family: 'Segoe UI', sans-serif;
-            font-size: 14px;
+            font-size: 13px;
             color: rgba(255, 255, 255, 0.65);
             background: transparent;
-            line-height: 1.6;
-            padding: 5px 0;
+            padding: 2px 0 4px 0;
         """)
         card_layout.addWidget(instructions)
 
@@ -604,7 +606,7 @@ class MainWindow(QMainWindow):
         self.exception_display = QTextEdit()
         self.exception_display.setReadOnly(True)
         self.exception_display.setPlaceholderText("No exception during processing.")
-        self.exception_display.setFixedHeight(72)
+        self.exception_display.setFixedHeight(76)
         self.exception_display.setStyleSheet("""
             QTextEdit {
                 font-family: 'Consolas', 'Segoe UI', monospace;
@@ -618,21 +620,20 @@ class MainWindow(QMainWindow):
         """)
         card_layout.addWidget(self.exception_display)
 
-        card_layout.addSpacerItem(
-            QSpacerItem(10, 8, QSizePolicy.Minimum, QSizePolicy.Fixed)
-        )
+        card_layout.addSpacerItem(QSpacerItem(10, 4, QSizePolicy.Minimum, QSizePolicy.Fixed))
 
         # ── File Status Label ────────────────────────────────────────────
         self.file_label = QLabel("No file selected.")
         self.file_label.setAlignment(Qt.AlignCenter)
         self.file_label.setWordWrap(True)
+        self.file_label.setMinimumHeight(24)
         self.file_label.setStyleSheet("""
             font-family: 'Segoe UI', sans-serif;
             font-size: 14px;
             font-weight: 600;
             color: #b0bec5;
             background: transparent;
-            padding: 4px 10px;
+            padding: 8px 10px 2px 10px;
         """)
         card_layout.addWidget(self.file_label)
 
@@ -695,9 +696,7 @@ class MainWindow(QMainWindow):
         btn_layout.addWidget(self.select_btn)
         card_layout.addLayout(btn_layout)
 
-        card_layout.addSpacerItem(
-            QSpacerItem(10, 10, QSizePolicy.Minimum, QSizePolicy.Fixed)
-        )
+        card_layout.addSpacerItem(QSpacerItem(10, 4, QSizePolicy.Minimum, QSizePolicy.Fixed))
 
         # ── Status Message Label ─────────────────────────────────────────
         self.status_label = QLabel("")
@@ -728,9 +727,6 @@ class MainWindow(QMainWindow):
         """)
         card_layout.addWidget(self.output_label)
 
-        # Add stretch to bottom
-        card_layout.addStretch()
-
         main_layout.addWidget(card)
 
         # ── Footer ───────────────────────────────────────────────────────
@@ -741,7 +737,7 @@ class MainWindow(QMainWindow):
             font-size: 11px;
             color: rgba(255,255,255,0.25);
             background: transparent;
-            padding-top: 10px;
+            padding-top: 2px;
         """)
         main_layout.addWidget(footer)
 
