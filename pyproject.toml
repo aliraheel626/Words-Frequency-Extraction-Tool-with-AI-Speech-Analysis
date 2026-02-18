@@ -1,0 +1,11 @@
+[project]
+name = "speech-analyser"
+version = "0.1.0"
+description = "Words Frequency Extraction Tool - Extract word frequencies from DOCX files and generate Excel reports with charts"
+requires-python = ">=3.12"
+dependencies = [
+    "openpyxl>=3.1.5",
+    "pyside6>=6.10.2",
+    "python-docx>=1.2.0",
+    "spacy>=3.8.11",
+]

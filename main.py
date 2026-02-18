@@ -44,13 +44,11 @@ from PySide6.QtGui import (
     QBrush,
     QPen,
 )
-
 from docx import Document
 from openpyxl import Workbook
 from openpyxl.chart import BarChart, Reference
 from openpyxl.chart.series import SeriesLabel
 from openpyxl.styles import Font as XlFont, PatternFill, Alignment, Border, Side
-
 from spacy.lang.en.stop_words import STOP_WORDS
 
 
@@ -159,13 +157,20 @@ class ExtractionWorker(QThread):
             # Use spaCy's comprehensive stop words list
             stop_words = STOP_WORDS
 
-            for idx, (word, freq) in enumerate(sorted_freq):
-                row_num = idx + 2
+            # Separate content words from stop words
+            content_words = [
+                (w, f) for w, f in sorted_freq if w.lower() not in stop_words
+            ]
+            stop_word_entries = [
+                (w, f) for w, f in sorted_freq if w.lower() in stop_words
+            ]
+
+            # Write content words first (yellow highlighted), then stop words
+            row_num = 2
+            for idx, (word, freq) in enumerate(content_words):
                 word_cell = ws2.cell(row=row_num, column=1, value=word)
                 word_cell.font = data_font
-                # Only highlight content words (non-stop words)
-                if word.lower() not in stop_words:
-                    word_cell.fill = word_fill
+                word_cell.fill = word_fill
                 word_cell.border = thin_border
 
                 freq_cell = ws2.cell(row=row_num, column=2, value=freq)
@@ -173,16 +178,33 @@ class ExtractionWorker(QThread):
                 freq_cell.alignment = Alignment(horizontal="center")
                 freq_cell.border = thin_border
 
+                row_num += 1
                 if idx % 200 == 0:
                     pct = 75 + int((idx / max(len(sorted_freq), 1)) * 10)
-                    self.progress.emit(min(pct, 85))
+                    self.progress.emit(min(pct, 82))
+
+            # Track where content words end (for chart range)
+            content_end_row = row_num - 1
+
+            # Write stop words after (no yellow highlight)
+            for idx, (word, freq) in enumerate(stop_word_entries):
+                word_cell = ws2.cell(row=row_num, column=1, value=word)
+                word_cell.font = data_font
+                word_cell.border = thin_border
+
+                freq_cell = ws2.cell(row=row_num, column=2, value=freq)
+                freq_cell.font = data_font
+                freq_cell.alignment = Alignment(horizontal="center")
+                freq_cell.border = thin_border
+
+                row_num += 1
 
             # Column widths
             ws2.column_dimensions["A"].width = 20
             ws2.column_dimensions["B"].width = 15
             self.progress.emit(87)
 
-            # ── Create Bar Chart ─────────────────────────────────────────
+            # ── Create Bar Chart (content words only) ────────────────────
             self.status_message.emit("Creating chart...")
 
             chart = BarChart()
@@ -193,10 +215,9 @@ class ExtractionWorker(QThread):
             chart.width = 15
             chart.height = 7.5
 
-            # Data from row 2 onwards (skip header) — matches reference output
-            max_data_row = min(len(sorted_freq) + 1, 901)
-            data_ref = Reference(ws2, min_col=2, min_row=2, max_row=max_data_row)
-            cats_ref = Reference(ws2, min_col=1, min_row=2, max_row=max_data_row)
+            # Chart covers only content words (rows 2 to content_end_row)
+            data_ref = Reference(ws2, min_col=2, min_row=2, max_row=content_end_row)
+            cats_ref = Reference(ws2, min_col=1, min_row=2, max_row=content_end_row)
 
             chart.add_data(data_ref, titles_from_data=False)
             chart.set_categories(cats_ref)
