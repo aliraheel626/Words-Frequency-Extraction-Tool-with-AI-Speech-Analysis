@@ -3,6 +3,7 @@ Words Frequency Extraction Tool
 ================================
 A professional PySide6 desktop application that extracts word frequencies
 from DOCX files and generates Excel reports with charts.
+Includes AI-powered speech analysis using Google Gemini.
 
 Author: Speech Analyser Project
 """
@@ -25,6 +26,7 @@ from PySide6.QtWidgets import (
     QGraphicsDropShadowEffect,
     QSizePolicy,
     QSpacerItem,
+    QLineEdit,
 )
 from PySide6.QtCore import (
     Qt,
@@ -50,6 +52,8 @@ from openpyxl.chart import BarChart, Reference
 from openpyxl.chart.series import SeriesLabel
 from openpyxl.styles import Font as XlFont, PatternFill, Alignment, Border, Side
 from spacy.lang.en.stop_words import STOP_WORDS
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.messages import HumanMessage
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -63,10 +67,11 @@ class ExtractionWorker(QThread):
     finished_signal = Signal(str)  # output path
     error_signal = Signal(str)
 
-    def __init__(self, input_path, output_path):
+    def __init__(self, input_path, output_path, api_key=""):
         super().__init__()
         self.input_path = input_path
         self.output_path = output_path
+        self.api_key = api_key
 
     def run(self):
         try:
@@ -226,9 +231,121 @@ class ExtractionWorker(QThread):
             chart.series[0].title = SeriesLabel(v="FREQUENCY")
 
             ws2.add_chart(chart, "D1")
-            self.progress.emit(95)
+            self.progress.emit(88)
 
-            # ── Step 5: Save workbook ────────────────────────────────────
+            # ── Sheet 3: AI Speech Analysis (Gemini) ─────────────────────
+            if self.api_key:
+                self.status_message.emit("Analysing speech with Gemini AI...")
+                try:
+                    llm = ChatGoogleGenerativeAI(
+                        model="gemini-2.0-flash",
+                        google_api_key=self.api_key,
+                        temperature=0.3,
+                    )
+
+                    # Truncate text if very long (API limit)
+                    analysis_text = text[:12000] if len(text) > 12000 else text
+
+                    prompt = (
+                        "You are an expert political speech analyst. "
+                        "Analyse the following presidential speech and provide:\n\n"
+                        "1. CONTENT: A comprehensive summary of this speech "
+                        "(3-5 sentences covering the main topics, arguments, "
+                        "and key points discussed).\n\n"
+                        "2. PURPOSE: What is the purpose of this speech? "
+                        "(2-3 sentences explaining the speaker's intent, "
+                        "the target audience, and the desired outcome).\n\n"
+                        f"SPEECH TEXT:\n{analysis_text}\n\n"
+                        "Respond in this exact format:\n"
+                        "CONTENT: <your summary>\n"
+                        "PURPOSE: <your analysis>"
+                    )
+
+                    response = llm.invoke([HumanMessage(content=prompt)])
+                    ai_text = response.content.strip()
+
+                    # Parse response
+                    content_summary = ""
+                    purpose_text = ""
+                    if "PURPOSE:" in ai_text:
+                        parts = ai_text.split("PURPOSE:", 1)
+                        content_summary = parts[0].replace("CONTENT:", "").strip()
+                        purpose_text = parts[1].strip()
+                    else:
+                        content_summary = ai_text
+                        purpose_text = "Could not determine purpose."
+
+                    self.progress.emit(95)
+
+                    # Create the Speech Analysis sheet
+                    ws3 = wb.create_sheet(title="Speech Analysis")
+
+                    # Style definitions
+                    analysis_header_font = XlFont(
+                        name="Calibri", size=12, bold=True, color="FFFFFF"
+                    )
+                    analysis_fill = PatternFill(
+                        start_color="1F4E79", end_color="1F4E79", fill_type="solid"
+                    )
+                    analysis_data_font = XlFont(name="Calibri", size=11)
+                    wrap_alignment = Alignment(
+                        horizontal="left", vertical="top", wrap_text=True
+                    )
+                    center_alignment = Alignment(horizontal="center", vertical="center")
+                    thin_border_ai = Border(
+                        left=Side(style="thin"),
+                        right=Side(style="thin"),
+                        top=Side(style="thin"),
+                        bottom=Side(style="thin"),
+                    )
+
+                    # Headers
+                    for col_idx, header_text in enumerate(
+                        ["Category", "Description"], start=1
+                    ):
+                        cell = ws3.cell(row=1, column=col_idx, value=header_text)
+                        cell.font = analysis_header_font
+                        cell.fill = analysis_fill
+                        cell.alignment = center_alignment
+                        cell.border = thin_border_ai
+
+                    # Row 2: Content
+                    cat_cell = ws3.cell(row=2, column=1, value="Content")
+                    cat_cell.font = XlFont(name="Calibri", size=11, bold=True)
+                    cat_cell.alignment = center_alignment
+                    cat_cell.border = thin_border_ai
+
+                    desc_cell = ws3.cell(row=2, column=2, value=content_summary)
+                    desc_cell.font = analysis_data_font
+                    desc_cell.alignment = wrap_alignment
+                    desc_cell.border = thin_border_ai
+
+                    # Row 3: Purpose
+                    cat_cell2 = ws3.cell(row=3, column=1, value="Purpose")
+                    cat_cell2.font = XlFont(name="Calibri", size=11, bold=True)
+                    cat_cell2.alignment = center_alignment
+                    cat_cell2.border = thin_border_ai
+
+                    desc_cell2 = ws3.cell(row=3, column=2, value=purpose_text)
+                    desc_cell2.font = analysis_data_font
+                    desc_cell2.alignment = wrap_alignment
+                    desc_cell2.border = thin_border_ai
+
+                    # Column widths
+                    ws3.column_dimensions["A"].width = 15
+                    ws3.column_dimensions["B"].width = 80
+                    ws3.row_dimensions[2].height = 80
+                    ws3.row_dimensions[3].height = 60
+
+                except Exception as ai_err:
+                    # AI analysis is optional — don't fail the whole export
+                    self.status_message.emit(f"AI analysis skipped: {str(ai_err)[:60]}")
+            else:
+                self.status_message.emit("No API key — skipping AI analysis.")
+
+            self.progress.emit(98)
+
+            # ── Final Step: Save workbook ────────────────────────────────
             self.status_message.emit("Saving file...")
             wb.save(self.output_path)
             self.progress.emit(100)
@@ -284,7 +401,7 @@ class MainWindow(QMainWindow):
     # ── UI Setup ─────────────────────────────────────────────────────────
     def setup_ui(self):
         self.setWindowTitle("Words Frequency Extraction Tool")
-        self.setFixedSize(720, 580)
+        self.setFixedSize(720, 660)
         self.setWindowIcon(self._create_icon())
 
         # Central widget with gradient background
@@ -368,8 +485,9 @@ class MainWindow(QMainWindow):
 
         # ── Instructions ─────────────────────────────────────────────────
         instructions = QLabel(
-            "1. Select a DOCX file to extract word frequencies.\n"
-            "2. Save the output Excel file where you want."
+            "1. Enter your Gemini API key for AI speech analysis.\n"
+            "2. Select a DOCX file to extract word frequencies.\n"
+            "3. Save the output Excel file where you want."
         )
         instructions.setAlignment(Qt.AlignCenter)
         instructions.setStyleSheet("""
@@ -381,6 +499,49 @@ class MainWindow(QMainWindow):
             padding: 5px 0;
         """)
         card_layout.addWidget(instructions)
+
+        # ── Gemini API Key Input ──────────────────────────────────────────
+        api_key_label = QLabel("🔑  Gemini API Key (free tier)")
+        api_key_label.setStyleSheet("""
+            font-family: 'Segoe UI', sans-serif;
+            font-size: 13px;
+            font-weight: 600;
+            color: rgba(255, 255, 255, 0.55);
+            background: transparent;
+            padding: 0 5px;
+        """)
+        card_layout.addWidget(api_key_label)
+
+        self.api_key_input = QLineEdit()
+        self.api_key_input.setPlaceholderText(
+            "Paste your Google Gemini API key here..."
+        )
+        self.api_key_input.setEchoMode(QLineEdit.Password)
+        self.api_key_input.setFixedHeight(38)
+        self.api_key_input.setStyleSheet("""
+            QLineEdit {
+                font-family: 'Segoe UI', monospace;
+                font-size: 13px;
+                color: #e0e0e0;
+                background: rgba(255, 255, 255, 0.06);
+                border: 1px solid rgba(255, 255, 255, 0.15);
+                border-radius: 10px;
+                padding: 6px 14px;
+                selection-background-color: #6c63ff;
+            }
+            QLineEdit:focus {
+                border: 1px solid rgba(108, 99, 255, 0.6);
+                background: rgba(255, 255, 255, 0.09);
+            }
+            QLineEdit::placeholder {
+                color: rgba(255, 255, 255, 0.3);
+            }
+        """)
+        # Pre-fill from environment if available
+        env_key = os.environ.get("GOOGLE_API_KEY", "")
+        if env_key:
+            self.api_key_input.setText(env_key)
+        card_layout.addWidget(self.api_key_input)
 
         card_layout.addSpacerItem(
             QSpacerItem(10, 8, QSizePolicy.Minimum, QSizePolicy.Fixed)
@@ -607,7 +768,8 @@ class MainWindow(QMainWindow):
         self.select_btn.setText("  Processing...")
 
         # Start worker thread
-        self.worker = ExtractionWorker(file_path, save_path)
+        api_key = self.api_key_input.text().strip()
+        self.worker = ExtractionWorker(file_path, save_path, api_key=api_key)
         self.worker.progress.connect(self.on_progress)
         self.worker.status_message.connect(self.on_status)
         self.worker.finished_signal.connect(self.on_finished)
