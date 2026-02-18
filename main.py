@@ -14,7 +14,9 @@ import re
 
 from PySide6.QtWidgets import (
     QApplication,
+    QComboBox,
     QMainWindow,
+    QTextEdit,
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
@@ -66,14 +68,16 @@ class ExtractionWorker(QThread):
     status_message = Signal(str)
     finished_signal = Signal(str)  # output path
     error_signal = Signal(str)
+    exception_signal = Signal(str)  # full exception text for UI display
 
-    def __init__(self, input_path, output_path, api_key=""):
+    def __init__(self, input_path, output_path, api_key="", model="gpt-oss-120b"):
         super().__init__()
         self.input_path = input_path
         self.output_path = output_path
         self.api_key = api_key
+        self.model = model
         print(
-            f"DEBUG: Worker initialized with API Key: '{self.api_key[:5]}...' (Length: {len(self.api_key)})"
+            f"DEBUG: Worker initialized with API Key: '{self.api_key[:5]}...' (Length: {len(self.api_key)}), model: {self.model}"
         )
 
     def run(self):
@@ -241,7 +245,7 @@ class ExtractionWorker(QThread):
                 self.status_message.emit("Analysing speech with Cerebras AI...")
                 try:
                     llm = ChatCerebras(
-                        model="gpt-oss-120b",
+                        model=self.model,
                         api_key=self.api_key,
                         temperature=0.3,
                     )
@@ -345,6 +349,7 @@ class ExtractionWorker(QThread):
                     err_msg = f"AI analysis skipped: {str(ai_err)}"
                     print(f"DEBUG: {err_msg}")
                     self.status_message.emit(err_msg[:60])
+                    self.exception_signal.emit(str(ai_err))
             else:
                 print("DEBUG: No API key provided — skipping AI analysis.")
                 self.status_message.emit("No API key — skipping AI analysis.")
@@ -359,6 +364,7 @@ class ExtractionWorker(QThread):
             self.finished_signal.emit(self.output_path)
 
         except Exception as e:
+            self.exception_signal.emit(str(e))
             self.error_signal.emit(str(e))
 
 
@@ -506,7 +512,7 @@ class MainWindow(QMainWindow):
         """)
         card_layout.addWidget(instructions)
 
-        # ── Cerebras API Key Input ──────────────────────────────────────────
+        # ── Cerebras API Key + Model ──────────────────────────────────────────
         api_key_label = QLabel("🔑  Cerebras API Key")
         api_key_label.setStyleSheet("""
             font-family: 'Segoe UI', sans-serif;
@@ -517,6 +523,9 @@ class MainWindow(QMainWindow):
             padding: 0 5px;
         """)
         card_layout.addWidget(api_key_label)
+
+        api_key_row = QHBoxLayout()
+        api_key_row.setSpacing(12)
 
         self.api_key_input = QLineEdit()
         self.api_key_input.setPlaceholderText(
@@ -543,11 +552,71 @@ class MainWindow(QMainWindow):
                 color: rgba(255, 255, 255, 0.3);
             }
         """)
-        # Pre-fill from environment if available
         env_key = os.environ.get("CEREBRAS_API_KEY", "")
         if env_key:
             self.api_key_input.setText(env_key)
-        card_layout.addWidget(self.api_key_input)
+        api_key_row.addWidget(self.api_key_input)
+
+        self.model_combo = QComboBox()
+        self.model_combo.addItems(["gpt-oss-120b", "llama3.1-8b"])
+        self.model_combo.setFixedHeight(38)
+        self.model_combo.setMinimumWidth(140)
+        self.model_combo.setStyleSheet("""
+            QComboBox {
+                font-family: 'Segoe UI', sans-serif;
+                font-size: 13px;
+                color: #e0e0e0;
+                background: rgba(255, 255, 255, 0.06);
+                border: 1px solid rgba(255, 255, 255, 0.15);
+                border-radius: 10px;
+                padding: 6px 14px;
+                min-width: 120px;
+            }
+            QComboBox:focus {
+                border: 1px solid rgba(108, 99, 255, 0.6);
+                background: rgba(255, 255, 255, 0.09);
+            }
+            QComboBox::drop-down {
+                border: none;
+                padding-right: 8px;
+            }
+            QComboBox QAbstractItemView {
+                background: #1a1a2e;
+                color: #e0e0e0;
+                selection-background-color: #6c63ff;
+            }
+        """)
+        api_key_row.addWidget(self.model_combo)
+
+        card_layout.addLayout(api_key_row)
+
+        # ── Exception display (below dropdown) ────────────────────────────
+        exception_label = QLabel("Exception (if any)")
+        exception_label.setStyleSheet("""
+            font-family: 'Segoe UI', sans-serif;
+            font-size: 12px;
+            font-weight: 600;
+            color: rgba(255, 255, 255, 0.5);
+            background: transparent;
+            padding: 6px 0 2px 0;
+        """)
+        card_layout.addWidget(exception_label)
+        self.exception_display = QTextEdit()
+        self.exception_display.setReadOnly(True)
+        self.exception_display.setPlaceholderText("No exception during processing.")
+        self.exception_display.setFixedHeight(72)
+        self.exception_display.setStyleSheet("""
+            QTextEdit {
+                font-family: 'Consolas', 'Segoe UI', monospace;
+                font-size: 11px;
+                color: #ff8a80;
+                background: rgba(255, 255, 255, 0.05);
+                border: 1px solid rgba(255, 120, 100, 0.3);
+                border-radius: 8px;
+                padding: 6px 10px;
+            }
+        """)
+        card_layout.addWidget(self.exception_display)
 
         card_layout.addSpacerItem(
             QSpacerItem(10, 8, QSizePolicy.Minimum, QSizePolicy.Fixed)
@@ -742,6 +811,7 @@ class MainWindow(QMainWindow):
         self.status_label.setText("")
         self.output_label.setText("")
         self.progress_bar.setValue(0)
+        self.exception_display.clear()
 
         # Ask for output location
         default_name = os.path.splitext(os.path.basename(file_path))[0] + "_output.xlsx"
@@ -775,16 +845,22 @@ class MainWindow(QMainWindow):
 
         # Start worker thread
         api_key = self.api_key_input.text().strip()
-        self.worker = ExtractionWorker(file_path, save_path, api_key=api_key)
+        model = self.model_combo.currentText()
+        self.worker = ExtractionWorker(file_path, save_path, api_key=api_key, model=model)
         self.worker.progress.connect(self.on_progress)
         self.worker.status_message.connect(self.on_status)
         self.worker.finished_signal.connect(self.on_finished)
         self.worker.error_signal.connect(self.on_error)
+        self.worker.exception_signal.connect(self.on_exception)
         self.worker.start()
 
     def on_progress(self, value):
         """Update progress bar with smooth animation."""
         self.progress_bar.setValue(value)
+
+    def on_exception(self, text):
+        """Show full exception text in the exception display."""
+        self.exception_display.setPlainText(text)
 
     def on_status(self, message):
         """Update status message during processing."""
@@ -829,7 +905,8 @@ class MainWindow(QMainWindow):
 
     def on_error(self, error_msg):
         """Handle errors during processing."""
-        self.status_label.setText(f"Error: {error_msg}")
+        self.exception_display.setPlainText(error_msg)
+        self.status_label.setText(f"Error: {error_msg[:80]}{'…' if len(error_msg) > 80 else ''}")
         self.status_label.setStyleSheet("""
             font-family: 'Segoe UI', sans-serif;
             font-size: 14px;
