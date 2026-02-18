@@ -10,28 +10,48 @@ Author: Speech Analyser Project
 import sys
 import os
 import re
-from collections import Counter
 
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QPushButton, QFileDialog, QProgressBar, QFrame,
-    QGraphicsDropShadowEffect, QSizePolicy, QSpacerItem
+    QApplication,
+    QMainWindow,
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QFileDialog,
+    QProgressBar,
+    QFrame,
+    QGraphicsDropShadowEffect,
+    QSizePolicy,
+    QSpacerItem,
 )
 from PySide6.QtCore import (
-    Qt, QThread, Signal, QPropertyAnimation, QEasingCurve,
-    QTimer, QSize, Property, QSequentialAnimationGroup,
-    QParallelAnimationGroup
+    Qt,
+    QThread,
+    Signal,
+    QPropertyAnimation,
+    QEasingCurve,
 )
 from PySide6.QtGui import (
-    QFont, QColor, QPalette, QLinearGradient, QPainter,
-    QIcon, QPixmap, QBrush, QPen, QFontDatabase
+    QFont,
+    QColor,
+    QPalette,
+    QLinearGradient,
+    QPainter,
+    QIcon,
+    QPixmap,
+    QBrush,
+    QPen,
 )
 
 from docx import Document
 from openpyxl import Workbook
 from openpyxl.chart import BarChart, Reference
+from openpyxl.chart.series import SeriesLabel
 from openpyxl.styles import Font as XlFont, PatternFill, Alignment, Border, Side
-from openpyxl.utils import get_column_letter
+
+from spacy.lang.en.stop_words import STOP_WORDS
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -39,6 +59,7 @@ from openpyxl.utils import get_column_letter
 # ─────────────────────────────────────────────────────────────────────────────
 class ExtractionWorker(QThread):
     """Background worker that extracts words and creates the Excel report."""
+
     progress = Signal(int)
     status_message = Signal(str)
     finished_signal = Signal(str)  # output path
@@ -73,7 +94,9 @@ class ExtractionWorker(QThread):
 
             # ── Step 3: Calculate frequencies ────────────────────────────
             self.status_message.emit("Calculating frequencies...")
-            word_freq = Counter(words_lower)
+            word_freq = {}
+            for w in words_lower:
+                word_freq[w] = word_freq.get(w, 0) + 1
             # Sort by frequency descending, then alphabetically
             sorted_freq = sorted(word_freq.items(), key=lambda x: (-x[1], x[0]))
             self.progress.emit(55)
@@ -95,7 +118,7 @@ class ExtractionWorker(QThread):
                     self.progress.emit(min(pct, 70))
 
             # Adjust column width for Sheet 1
-            ws1.column_dimensions['A'].width = 25
+            ws1.column_dimensions["A"].width = 25
             self.progress.emit(72)
 
             # ── Sheet 2: Word Frequencies with chart ─────────────────────
@@ -103,7 +126,9 @@ class ExtractionWorker(QThread):
 
             # Header row styling
             header_font = XlFont(name="Calibri", size=11, bold=True, color="FFFFFF")
-            header_fill = PatternFill(start_color="2F5496", end_color="2F5496", fill_type="solid")
+            header_fill = PatternFill(
+                start_color="2F5496", end_color="2F5496", fill_type="solid"
+            )
             header_alignment = Alignment(horizontal="center", vertical="center")
             thin_border = Border(
                 left=Side(style="thin"),
@@ -127,13 +152,20 @@ class ExtractionWorker(QThread):
 
             # Write frequency data
             data_font = XlFont(name="Calibri", size=11)
-            word_fill = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
+            word_fill = PatternFill(
+                start_color="FFFF00", end_color="FFFF00", fill_type="solid"
+            )
+
+            # Use spaCy's comprehensive stop words list
+            stop_words = STOP_WORDS
 
             for idx, (word, freq) in enumerate(sorted_freq):
                 row_num = idx + 2
                 word_cell = ws2.cell(row=row_num, column=1, value=word)
                 word_cell.font = data_font
-                word_cell.fill = word_fill
+                # Only highlight content words (non-stop words)
+                if word.lower() not in stop_words:
+                    word_cell.fill = word_fill
                 word_cell.border = thin_border
 
                 freq_cell = ws2.cell(row=row_num, column=2, value=freq)
@@ -146,8 +178,8 @@ class ExtractionWorker(QThread):
                     self.progress.emit(min(pct, 85))
 
             # Column widths
-            ws2.column_dimensions['A'].width = 20
-            ws2.column_dimensions['B'].width = 15
+            ws2.column_dimensions["A"].width = 20
+            ws2.column_dimensions["B"].width = 15
             self.progress.emit(87)
 
             # ── Create Bar Chart ─────────────────────────────────────────
@@ -158,18 +190,19 @@ class ExtractionWorker(QThread):
             chart.title = "Word Frequencies Chart"
             chart.y_axis.title = "Frequency"
             chart.x_axis.title = "Word"
-            chart.style = 10
-            chart.width = 30
-            chart.height = 15
+            chart.width = 15
+            chart.height = 7.5
 
-            data_ref = Reference(ws2, min_col=2, min_row=1,
-                                 max_row=min(len(sorted_freq) + 1, 901))
-            cats_ref = Reference(ws2, min_col=1, min_row=2,
-                                 max_row=min(len(sorted_freq) + 1, 901))
+            # Data from row 2 onwards (skip header) — matches reference output
+            max_data_row = min(len(sorted_freq) + 1, 901)
+            data_ref = Reference(ws2, min_col=2, min_row=2, max_row=max_data_row)
+            cats_ref = Reference(ws2, min_col=1, min_row=2, max_row=max_data_row)
 
-            chart.add_data(data_ref, titles_from_data=True)
+            chart.add_data(data_ref, titles_from_data=False)
             chart.set_categories(cats_ref)
-            chart.shape = 4
+
+            # Name the series explicitly
+            chart.series[0].title = SeriesLabel(v="FREQUENCY")
 
             ws2.add_chart(chart, "D1")
             self.progress.emit(95)
@@ -328,7 +361,9 @@ class MainWindow(QMainWindow):
         """)
         card_layout.addWidget(instructions)
 
-        card_layout.addSpacerItem(QSpacerItem(10, 8, QSizePolicy.Minimum, QSizePolicy.Fixed))
+        card_layout.addSpacerItem(
+            QSpacerItem(10, 8, QSizePolicy.Minimum, QSizePolicy.Fixed)
+        )
 
         # ── File Status Label ────────────────────────────────────────────
         self.file_label = QLabel("No file selected.")
@@ -403,7 +438,9 @@ class MainWindow(QMainWindow):
         btn_layout.addWidget(self.select_btn)
         card_layout.addLayout(btn_layout)
 
-        card_layout.addSpacerItem(QSpacerItem(10, 10, QSizePolicy.Minimum, QSizePolicy.Fixed))
+        card_layout.addSpacerItem(
+            QSpacerItem(10, 10, QSizePolicy.Minimum, QSizePolicy.Fixed)
+        )
 
         # ── Status Message Label ─────────────────────────────────────────
         self.status_label = QLabel("")
@@ -495,7 +532,7 @@ class MainWindow(QMainWindow):
             self,
             "Select a DOCX Speech File",
             "",
-            "Word Documents (*.docx);;All Files (*)"
+            "Word Documents (*.docx);;All Files (*)",
         )
 
         if not file_path:
@@ -525,7 +562,7 @@ class MainWindow(QMainWindow):
             self,
             "Save Output Excel File",
             os.path.join(default_dir, default_name),
-            "Excel Files (*.xlsx);;All Files (*)"
+            "Excel Files (*.xlsx);;All Files (*)",
         )
 
         if not save_path:
@@ -541,8 +578,8 @@ class MainWindow(QMainWindow):
             return
 
         # Ensure .xlsx extension
-        if not save_path.lower().endswith('.xlsx'):
-            save_path += '.xlsx'
+        if not save_path.lower().endswith(".xlsx"):
+            save_path += ".xlsx"
 
         # Disable button during processing
         self.select_btn.setEnabled(False)
@@ -587,9 +624,7 @@ class MainWindow(QMainWindow):
         """)
 
         display_path = output_path.replace("\\", "/")
-        self.output_label.setText(
-            f"The output file is saved at: {display_path}"
-        )
+        self.output_label.setText(f"The output file is saved at: {display_path}")
         self.output_label.setStyleSheet("""
             font-family: 'Segoe UI', sans-serif;
             font-size: 13px;
