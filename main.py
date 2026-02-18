@@ -3,7 +3,7 @@ Words Frequency Extraction Tool
 ================================
 A professional PySide6 desktop application that extracts word frequencies
 from DOCX files and generates Excel reports with charts.
-Includes AI-powered speech analysis using Google Gemini.
+Includes AI-powered speech analysis using Cerebras.
 
 Author: Speech Analyser Project
 """
@@ -52,7 +52,7 @@ from openpyxl.chart import BarChart, Reference
 from openpyxl.chart.series import SeriesLabel
 from openpyxl.styles import Font as XlFont, PatternFill, Alignment, Border, Side
 from spacy.lang.en.stop_words import STOP_WORDS
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_cerebras import ChatCerebras
 from langchain_core.messages import HumanMessage
 
 
@@ -72,6 +72,9 @@ class ExtractionWorker(QThread):
         self.input_path = input_path
         self.output_path = output_path
         self.api_key = api_key
+        print(
+            f"DEBUG: Worker initialized with API Key: '{self.api_key[:5]}...' (Length: {len(self.api_key)})"
+        )
 
     def run(self):
         try:
@@ -233,18 +236,18 @@ class ExtractionWorker(QThread):
             ws2.add_chart(chart, "D1")
             self.progress.emit(88)
 
-            # ── Sheet 3: AI Speech Analysis (Gemini) ─────────────────────
+            # ── Sheet 3: AI Speech Analysis (Cerebras) ─────────────────────
             if self.api_key:
-                self.status_message.emit("Analysing speech with Gemini AI...")
+                self.status_message.emit("Analysing speech with Cerebras AI...")
                 try:
-                    llm = ChatGoogleGenerativeAI(
-                        model="gemini-2.0-flash",
-                        google_api_key=self.api_key,
+                    llm = ChatCerebras(
+                        model="gpt-oss-120b",
+                        api_key=self.api_key,
                         temperature=0.3,
                     )
 
                     # Truncate text if very long (API limit)
-                    analysis_text = text[:12000] if len(text) > 12000 else text
+                    analysis_text = text[:100000] if len(text) > 100000 else text
 
                     prompt = (
                         "You are an expert political speech analyst. "
@@ -339,8 +342,11 @@ class ExtractionWorker(QThread):
 
                 except Exception as ai_err:
                     # AI analysis is optional — don't fail the whole export
-                    self.status_message.emit(f"AI analysis skipped: {str(ai_err)[:60]}")
+                    err_msg = f"AI analysis skipped: {str(ai_err)}"
+                    print(f"DEBUG: {err_msg}")
+                    self.status_message.emit(err_msg[:60])
             else:
+                print("DEBUG: No API key provided — skipping AI analysis.")
                 self.status_message.emit("No API key — skipping AI analysis.")
 
             self.progress.emit(98)
@@ -485,7 +491,7 @@ class MainWindow(QMainWindow):
 
         # ── Instructions ─────────────────────────────────────────────────
         instructions = QLabel(
-            "1. Enter your Gemini API key for AI speech analysis.\n"
+            "1. Enter your Cerebras API key for AI speech analysis.\n"
             "2. Select a DOCX file to extract word frequencies.\n"
             "3. Save the output Excel file where you want."
         )
@@ -500,8 +506,8 @@ class MainWindow(QMainWindow):
         """)
         card_layout.addWidget(instructions)
 
-        # ── Gemini API Key Input ──────────────────────────────────────────
-        api_key_label = QLabel("🔑  Gemini API Key (free tier)")
+        # ── Cerebras API Key Input ──────────────────────────────────────────
+        api_key_label = QLabel("🔑  Cerebras API Key")
         api_key_label.setStyleSheet("""
             font-family: 'Segoe UI', sans-serif;
             font-size: 13px;
@@ -514,7 +520,7 @@ class MainWindow(QMainWindow):
 
         self.api_key_input = QLineEdit()
         self.api_key_input.setPlaceholderText(
-            "Paste your Google Gemini API key here..."
+            "Paste your Cerebras API key here..."
         )
         self.api_key_input.setEchoMode(QLineEdit.Password)
         self.api_key_input.setFixedHeight(38)
@@ -538,7 +544,7 @@ class MainWindow(QMainWindow):
             }
         """)
         # Pre-fill from environment if available
-        env_key = os.environ.get("GOOGLE_API_KEY", "")
+        env_key = os.environ.get("CEREBRAS_API_KEY", "")
         if env_key:
             self.api_key_input.setText(env_key)
         card_layout.addWidget(self.api_key_input)
