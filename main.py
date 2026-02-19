@@ -56,6 +56,62 @@ from openpyxl.styles import Font as XlFont, PatternFill, Alignment, Border, Side
 from spacy.lang.en.stop_words import STOP_WORDS
 from langchain_cerebras import ChatCerebras
 from langchain_core.messages import HumanMessage
+from pydantic import BaseModel, Field
+import tiktoken
+
+# Model context limits (Max Context Length from Cerebras chart)
+MODEL_CONTEXT_LIMITS = {"gpt-oss-120b": 65_536, "llama3.1-8b": 8_192}
+RESERVED_TOKENS = 4096  # instruction + max output
+
+# Instruction prefix used in the prompt (without the speech body)
+SPEECH_ANALYSIS_INSTRUCTION_PREFIX = (
+    "You are an expert political speech analyst. "
+    "Analyse the following presidential speech and provide:\n\n"
+    "1. CONTENT: A comprehensive summary of this speech "
+    "(3-5 sentences covering the main topics, arguments, "
+    "and key points discussed).\n\n"
+    "2. PURPOSE: What is the purpose of this speech? "
+    "(2-3 sentences explaining the speaker's intent, "
+    "the target audience, and the desired outcome).\n\n"
+    "SPEECH TEXT:\n"
+)
+
+
+def _get_encoding():
+    """Lazy-load tiktoken encoding (cl100k_base is a reasonable approximation)."""
+    return tiktoken.get_encoding("cl100k_base")
+
+
+def truncate_speech_to_token_limit(full_text: str, model: str) -> str:
+    """
+    Truncate speech text so that instruction prefix + text stays within the
+    model's context limit (token-based). Returns truncated string.
+    """
+    limit = MODEL_CONTEXT_LIMITS.get(model, 65_536)
+    max_tokens = limit - RESERVED_TOKENS
+    if max_tokens <= 0:
+        return ""
+    enc = _get_encoding()
+    prefix_tokens = len(enc.encode(SPEECH_ANALYSIS_INSTRUCTION_PREFIX))
+    budget = max_tokens - prefix_tokens
+    if budget <= 0:
+        return ""
+    tokens = enc.encode(full_text)
+    if len(tokens) <= budget:
+        return full_text
+    truncated_tokens = tokens[:budget]
+    return enc.decode(truncated_tokens)
+
+
+class SpeechAnalysisOutput(BaseModel):
+    """Structured speech analysis result from the model."""
+
+    content: str = Field(
+        description="Comprehensive summary of the speech (3-5 sentences)."
+    )
+    purpose: str = Field(
+        description="Purpose of the speech: intent, audience, desired outcome (2-3 sentences)."
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -69,6 +125,7 @@ class ExtractionWorker(QThread):
     finished_signal = Signal(str)  # output path
     error_signal = Signal(str)
     exception_signal = Signal(str)  # full exception text for UI display
+    token_usage_signal = Signal(dict)  # {"model", "input_tokens", "output_tokens", "total_tokens", "context_limit"}
 
     def __init__(self, input_path, output_path, api_key="", model="gpt-oss-120b"):
         super().__init__()
@@ -250,37 +307,49 @@ class ExtractionWorker(QThread):
                         temperature=0.3,
                     )
 
-                    # Truncate text if very long (API limit)
-                    analysis_text = text[:100000] if len(text) > 100000 else text
+                    # Token-based truncation (model context limits from chart)
+                    analysis_text = truncate_speech_to_token_limit(text, self.model)
 
                     prompt = (
-                        "You are an expert political speech analyst. "
-                        "Analyse the following presidential speech and provide:\n\n"
-                        "1. CONTENT: A comprehensive summary of this speech "
-                        "(3-5 sentences covering the main topics, arguments, "
-                        "and key points discussed).\n\n"
-                        "2. PURPOSE: What is the purpose of this speech? "
-                        "(2-3 sentences explaining the speaker's intent, "
-                        "the target audience, and the desired outcome).\n\n"
-                        f"SPEECH TEXT:\n{analysis_text}\n\n"
-                        "Respond in this exact format:\n"
-                        "CONTENT: <your summary>\n"
-                        "PURPOSE: <your analysis>"
+                        SPEECH_ANALYSIS_INSTRUCTION_PREFIX
+                        + analysis_text
+                        + "\n\nRespond with a JSON object with keys 'content' and 'purpose'."
                     )
 
-                    response = llm.invoke([HumanMessage(content=prompt)])
-                    ai_text = response.content.strip()
+                    structured_llm = llm.with_structured_output(
+                        SpeechAnalysisOutput, include_raw=True
+                    )
+                    response = structured_llm.invoke(
+                        [HumanMessage(content=prompt)]
+                    )
+                    parsed = response.get("parsed")
+                    raw_msg = response.get("raw")
 
-                    # Parse response
-                    content_summary = ""
-                    purpose_text = ""
-                    if "PURPOSE:" in ai_text:
-                        parts = ai_text.split("PURPOSE:", 1)
-                        content_summary = parts[0].replace("CONTENT:", "").strip()
-                        purpose_text = parts[1].strip()
-                    else:
-                        content_summary = ai_text
+                    if parsed is None:
+                        content_summary = "Analysis unavailable."
                         purpose_text = "Could not determine purpose."
+                    else:
+                        content_summary = parsed.content or ""
+                        purpose_text = parsed.purpose or "Could not determine purpose."
+
+                    # Emit token usage for UI (from Cerebras response)
+                    context_limit = MODEL_CONTEXT_LIMITS.get(
+                        self.model, 65_536
+                    )
+                    um = getattr(raw_msg, "usage_metadata", None) if raw_msg else None
+                    if um is not None:
+                        inp = um.get("input_tokens", 0) if isinstance(um, dict) else getattr(um, "input_tokens", 0)
+                        out = um.get("output_tokens", 0) if isinstance(um, dict) else getattr(um, "output_tokens", 0)
+                        tot = um.get("total_tokens", 0) if isinstance(um, dict) else getattr(um, "total_tokens", 0)
+                    else:
+                        inp = out = tot = 0
+                    self.token_usage_signal.emit({
+                        "model": self.model,
+                        "input_tokens": inp,
+                        "output_tokens": out,
+                        "total_tokens": tot,
+                        "context_limit": context_limit,
+                    })
 
                     self.progress.emit(95)
 
@@ -620,6 +689,29 @@ class MainWindow(QMainWindow):
         """)
         card_layout.addWidget(self.exception_display)
 
+        # ── Token usage (after AI run) ─────────────────────────────────────
+        token_label = QLabel("Token usage (last AI run)")
+        token_label.setStyleSheet("""
+            font-family: 'Segoe UI', sans-serif;
+            font-size: 12px;
+            font-weight: 600;
+            color: rgba(255, 255, 255, 0.5);
+            background: transparent;
+            padding: 6px 0 2px 0;
+        """)
+        card_layout.addWidget(token_label)
+        self.token_usage_label = QLabel("—")
+        self.token_usage_label.setAlignment(Qt.AlignCenter)
+        self.token_usage_label.setWordWrap(True)
+        self.token_usage_label.setStyleSheet("""
+            font-family: 'Segoe UI', monospace;
+            font-size: 12px;
+            color: rgba(255, 255, 255, 0.75);
+            background: transparent;
+            padding: 4px 8px;
+        """)
+        card_layout.addWidget(self.token_usage_label)
+
         card_layout.addSpacerItem(QSpacerItem(10, 4, QSizePolicy.Minimum, QSizePolicy.Fixed))
 
         # ── File Status Label ────────────────────────────────────────────
@@ -808,6 +900,7 @@ class MainWindow(QMainWindow):
         self.output_label.setText("")
         self.progress_bar.setValue(0)
         self.exception_display.clear()
+        self.token_usage_label.setText("—")
 
         # Ask for output location
         default_name = os.path.splitext(os.path.basename(file_path))[0] + "_output.xlsx"
@@ -848,6 +941,7 @@ class MainWindow(QMainWindow):
         self.worker.finished_signal.connect(self.on_finished)
         self.worker.error_signal.connect(self.on_error)
         self.worker.exception_signal.connect(self.on_exception)
+        self.worker.token_usage_signal.connect(self.on_token_usage)
         self.worker.start()
 
     def on_progress(self, value):
@@ -857,6 +951,17 @@ class MainWindow(QMainWindow):
     def on_exception(self, text):
         """Show full exception text in the exception display."""
         self.exception_display.setPlainText(text)
+
+    def on_token_usage(self, data):
+        """Update token counter from last AI run."""
+        model = data.get("model", "")
+        inp = data.get("input_tokens", 0)
+        out = data.get("output_tokens", 0)
+        tot = data.get("total_tokens", 0)
+        limit = data.get("context_limit", 0)
+        self.token_usage_label.setText(
+            f"Model: {model} | Input: {inp:,} | Output: {out:,} | Total: {tot:,} (limit: {limit:,})"
+        )
 
     def on_status(self, message):
         """Update status message during processing."""
